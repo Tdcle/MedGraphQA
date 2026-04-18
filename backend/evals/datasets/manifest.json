@@ -1,0 +1,20 @@
+{
+  "alias_sample_count": 15,
+  "datasets": {
+    "core_multi_turn": 100,
+    "core_single_turn": 100
+  },
+  "generated_at": "2026-04-18T03:35:57.638129+00:00",
+  "notes": [
+    "All labels are derived from the current KG and entity alias tables.",
+    "Core datasets focus on the highest-value checks: symptom extraction, negation filtering, disease top-k recall, and follow-up turn limit.",
+    "Disease labels should be evaluated as top-k recall, not guaranteed single-label diagnosis.",
+    "Use --full only when you need fine-grained auxiliary datasets."
+  ],
+  "profile_count": 400,
+  "source": {
+    "neo4j_database": "neo4j",
+    "neo4j_uri": "bolt://localhost:7687",
+    "postgres": "configured"
+  }
+}

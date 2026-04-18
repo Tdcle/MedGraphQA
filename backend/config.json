@@ -1,0 +1,124 @@
+{
+  "api": {
+    "title": "MedGraphQA API",
+    "version": "1.0.0",
+    "debug": false
+  },
+  "neo4j": {
+    "uri": "bolt://localhost:7687",
+    "user": "neo4j",
+    "database": "neo4j"
+  },
+  "postgres": {
+    "dsn": "postgresql://postgres:postgres@localhost:5432/medgraphqa",
+    "pool_min_size": 1,
+    "pool_max_size": 5,
+    "pool_timeout_seconds": 5
+  },
+  "elasticsearch": {
+    "hosts": [
+      "http://localhost:9200"
+    ],
+    "index": "medical_entity_alias",
+    "username": "",
+    "password": "",
+    "request_timeout_seconds": 5
+  },
+  "entity_search": {
+  "vector_enabled": true,
+  "vector_top_k": 12,
+  "vector_min_score": 1.2,
+  "rrf_k": 60,
+  "exact_rrf_weight": 1.6,
+  "elastic_rrf_weight": 1.0,
+  "vector_rrf_weight": 1.2
+  },
+  "entity_ner": {
+    "enabled": true,
+    "model_path": "../model/best_roberta_rnn_model_ent_aug.pt",
+    "pretrained_model": "../model/chinese-roberta-wwm-ext",
+    "max_length": 128,
+    "device": "cuda:0",
+    "confidence_threshold": 0.4,
+    "rnn_hidden_size": 128,
+    "rnn_num_layers": 2
+  },
+  "embedding": {
+    "provider": "ollama",
+    "api_base": "http://localhost:11434",
+    "model": "bge-m3",
+    "dimension": 1024,
+    "timeout_seconds": 30
+  },
+  "intent": {
+    "engine": "hybrid",
+    "max_intents": 5,
+    "rule_confidence_threshold": 0.75,
+    "llm_confidence_threshold": 0.7,
+    "use_llm_when_rule_uncertain": true,
+    "use_rule_when_llm_fails": true,
+    "llm": {
+      "provider": "dashscope",
+      "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "model": "qwen3.5-flash",
+      "temperature": 0.0,
+      "max_tokens": 256,
+      "timeout_seconds": 90
+    }
+  },
+  "clinical_context": {
+    "enabled": true,
+    "provider": "ollama",
+    "api_base": "http://localhost:11434",
+    "model": "qwen3:4b",
+    "temperature": 0.0,
+    "max_tokens": 1024,
+    "timeout_seconds": 90,
+    "enable_thinking": false
+  },
+  "disease_resolution": {
+    "confidence_threshold": 0.85,
+    "possible_confidence_threshold": 0.55,
+    "top_gap_threshold": 0.15,
+    "min_symptoms_for_inference": 2,
+    "ask_follow_up_when_below_threshold": true,
+    "max_follow_up_turns": 2,
+    "possible_candidate_limit": 3,
+    "candidate_limit": 5
+  },
+  "llm": {
+    "provider": "ollama",
+    "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "model": "qwen3.5-flash",
+    "ollama": {
+      "api_base": "http://localhost:11434",
+      "model": "qwen3:8b"
+    },
+    "temperature": 0.1,
+    "max_tokens": 1024,
+    "timeout_seconds": 90,
+    "enable_thinking": false
+  },
+  "paths": {
+    "entity_dir": "../data/ent_aug"
+  },
+  "auth": {
+    "token_ttl_minutes": 480
+  },
+  "logging": {
+    "level": "INFO",
+    "directory": "logs",
+    "file_enabled": true,
+    "retention_days": 14,
+    "access_log_enabled": true,
+    "chat_trace_enabled": true,
+    "chat_trace_file": "chat_trace.jsonl",
+    "chat_trace_max_chars": 4000
+  },
+  "cors": {
+    "origins": [
+      "http://localhost:5173",
+      "http://127.0.0.1:5173"
+    ]
+  }
+}
