@@ -34,7 +34,7 @@ def serialize_entities(entities: List[EntityCandidate]) -> List[ResolvedEntity]:
 
 
 def build_chat_response(state: dict, awaiting: bool) -> ChatResponse:
-    intents = state.get("used_intents") or intent_labels(state["intents"])
+    intents = state.get("used_intents") or intent_labels(state.get("intents", []))
     return ChatResponse(
         conversation_id=state["conversation_id"],
         answer=state["answer"],
@@ -42,4 +42,8 @@ def build_chat_response(state: dict, awaiting: bool) -> ChatResponse:
         entities=serialize_entities(state.get("entities", [])),
         evidence=state.get("evidence", []),
         awaiting_user_clarification=awaiting,
+        safety={
+            "input": state.get("input_safety", {}),
+            "output": state.get("output_safety", {}),
+        },
     )

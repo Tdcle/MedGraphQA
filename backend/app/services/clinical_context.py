@@ -502,34 +502,28 @@ class ClinicalContextService:
         entity_context = self._context_from_entities(entities or [])
         for item in entity_context.symptoms:
             if not self._is_negated_term(item.name, negated):
-                symptoms.append(item)
+                self._append_symptom_prefer_specific(symptoms, item)
         for hint in hints:
             if self._is_negated_term(hint, negated):
                 continue
-            if any(existing.name == hint for existing in symptoms):
-                continue
-            symptoms.append(
+            self._append_symptom_prefer_specific(
+                symptoms,
                 SymptomMention(
                     name=hint,
                     severity=severity,
                     duration=duration,
                     progression=progression,
-                )
+                ),
             )
         for phrase in self._extract_positive_phrases_from_text(query, negated):
-            if any(
-                self._same_text(existing.name, phrase)
-                or self._same_text(phrase, existing.name)
-                for existing in symptoms
-            ):
-                continue
-            symptoms.append(
+            self._append_symptom_prefer_specific(
+                symptoms,
                 SymptomMention(
                     name=phrase,
                     severity=severity,
                     duration=duration,
                     progression=progression,
-                )
+                ),
             )
         return ClinicalContext(
             symptoms=symptoms,
@@ -590,6 +584,47 @@ class ClinicalContextService:
             if text not in result:
                 result.append(text)
         return result[:8]
+
+    @classmethod
+    def _append_symptom_prefer_specific(
+        cls,
+        symptoms: list[SymptomMention],
+        item: SymptomMention,
+    ) -> None:
+        name = str(item.name or "").strip()
+        if not name:
+            return
+        for index, existing in enumerate(list(symptoms)):
+            existing_name = str(existing.name or "").strip()
+            if not existing_name:
+                continue
+            if existing_name == name:
+                symptoms[index] = cls._merge_symptom_detail(existing, item)
+                return
+            if cls._same_text(existing_name, name):
+                if len(name) > len(existing_name):
+                    symptoms[index] = cls._merge_symptom_detail(
+                        SymptomMention(name=name),
+                        existing,
+                    )
+                    symptoms[index] = cls._merge_symptom_detail(symptoms[index], item)
+                return
+        symptoms.append(item)
+
+    @staticmethod
+    def _merge_symptom_detail(
+        base: SymptomMention,
+        extra: SymptomMention,
+    ) -> SymptomMention:
+        return SymptomMention(
+            name=base.name,
+            body_part=base.body_part or extra.body_part,
+            severity=base.severity or extra.severity,
+            duration=base.duration or extra.duration,
+            progression=base.progression or extra.progression,
+            quality=base.quality or extra.quality,
+            frequency=base.frequency or extra.frequency,
+        )
 
     @staticmethod
     def _first_match(query: str, pattern: re.Pattern) -> str | None:

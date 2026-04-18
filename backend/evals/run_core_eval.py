@@ -213,6 +213,7 @@ class CoreEvaluator:
             max_follow_up_turns=self.max_follow_up_turns,
             possible_confidence_threshold=self.possible_confidence_threshold,
             possible_candidate_limit=self.possible_candidate_limit,
+            negated_symptoms=clinical_context.negated_symptoms,
         )
         prediction = CasePrediction(
             positive_symptoms=[

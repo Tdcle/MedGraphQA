@@ -27,6 +27,7 @@ class ChatResponse(BaseModel):
     entities: List[ResolvedEntity]
     evidence: List[str]
     awaiting_user_clarification: bool = False
+    safety: dict = Field(default_factory=dict)
 
 
 class ChatSessionSummary(BaseModel):

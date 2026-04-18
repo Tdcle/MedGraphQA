@@ -6,6 +6,7 @@ __pycache__/
 .venv/
 venv/
 .env
+.idea/
 backend/.env
 
 frontend/node_modules/
@@ -18,3 +19,4 @@ neo4j-community-5.18.1/
 
 model/
 data/
+docs/

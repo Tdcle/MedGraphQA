@@ -51,6 +51,10 @@ def emit_chat_trace(
         "answer": truncate_text(state.get("answer", ""), max_chars),
         "fallback_reason": state.get("fallback_reason"),
         "llm_error": state.get("llm_error"),
+        "safety": {
+            "input": state.get("input_safety", {}),
+            "output": state.get("output_safety", {}),
+        },
         "stats": {
             "query_len": len(state["query"]),
             "prompt_len": len(state.get("prompt", "")),

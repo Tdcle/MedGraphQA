@@ -5,27 +5,18 @@ from collections import Counter
 from typing import Any, Sequence
 
 from app.services.disease_resolution import DiseaseCandidateScore
+from app.services.follow_up_planner import FollowUpQuestionPlanner, FollowUpQuestionSlot
 from app.services.llm_service import DashScopeService, OllamaService
 from app.services.operation_log import log_operation
 
 
 logger = logging.getLogger("medgraphqa.follow_up")
 
-_GENERIC_SYMPTOMS = {
-    "疼",
-    "痛",
-    "疼痛",
-    "不适",
-    "难受",
-    "不舒服",
-    "症状",
-    "体征",
-}
-
 
 class FollowUpQuestionService:
     def __init__(self, llm_service: DashScopeService | OllamaService) -> None:
         self.llm_service = llm_service
+        self.planner = FollowUpQuestionPlanner()
 
     def build(self, state: dict[str, Any]) -> str | None:
         resolution = state.get("disease_resolution")
@@ -38,14 +29,18 @@ class FollowUpQuestionService:
         context = state.get("clinical_context") or {}
         known = self._known_context(state, context)
         profiles = self._candidate_profiles(candidates, known)
-        if not profiles:
+        slots = self.planner.question_slots(candidates, known)
+        if not profiles or not slots:
             return None
 
-        prompt = self._build_prompt(state, context, known, profiles)
+        fallback_answer = self.planner.deterministic_answer(slots)
+        prompt = self._build_prompt(state, context, known, profiles, slots)
         with log_operation(
             logger,
             "follow_up.generate",
             candidate_count=len(profiles),
+            selected_question_count=len(slots),
+            selected_questions="|".join(slot.question for slot in slots),
             prompt_len=len(prompt),
         ) as result:
             try:
@@ -53,10 +48,15 @@ class FollowUpQuestionService:
             except Exception:
                 logger.exception("operation=follow_up.generate_inner status=error")
                 result["fallback"] = "llm_error"
-                return None
+                result["answer_len"] = len(fallback_answer)
+                return fallback_answer
             answer = self._clean_answer(answer)
             result["answer_len"] = len(answer)
-            return answer or None
+            if not answer:
+                result["fallback"] = "llm_empty_output"
+                result["answer_len"] = len(fallback_answer)
+                return fallback_answer
+            return answer
 
     def _build_prompt(
         self,
@@ -64,6 +64,7 @@ class FollowUpQuestionService:
         context: dict[str, Any],
         known: dict[str, list[str] | str | None],
         profiles: list[dict[str, Any]],
+        slots: list[FollowUpQuestionSlot],
     ) -> str:
         payload = {
             "user_query": state.get("effective_query") or state.get("query"),
@@ -74,13 +75,14 @@ class FollowUpQuestionService:
             "diet_status": known["diet_status"],
             "similar_history": known["similar_history"],
             "candidate_diseases": profiles,
+            "selected_questions": [slot.to_prompt_dict() for slot in slots],
             "knowledge_evidence": state.get("evidence", [])[:3],
         }
         return (
             "你是医疗问答助手的追问生成器。你不能诊断，也不要给治疗建议。\n"
-            "任务：根据知识图谱中的候选疾病及其症状差异，生成能区分候选疾病的追问。\n"
+            "任务：根据系统已经选出的 selected_questions，生成能区分候选疾病的追问。\n"
             "要求：\n"
-            "1. 优先询问候选疾病之间差异最大的症状、诱因、持续变化或必要检查信息。\n"
+            "1. 必须围绕 selected_questions 追问，可以合并表达，但不要新增无关问题。\n"
             "2. 不要重复询问用户已经说明或否认的信息。\n"
             "3. 不要照搬固定模板，不要一次问太多，最多提出3个问题。\n"
             "4. 语气自然，先说明“目前还不能确定具体疾病”，再追问关键信息。\n"
@@ -102,7 +104,7 @@ class FollowUpQuestionService:
             symptom
             for candidate in top
             for symptom in candidate.disease_symptoms
-            if self._usable_symptom(symptom, known_positive, known_negative)
+            if self.planner.usable_symptom(symptom, known_positive, known_negative)
         ]
         counts = Counter(all_symptoms)
         profile_list: list[dict[str, Any]] = []
@@ -110,7 +112,7 @@ class FollowUpQuestionService:
             discriminative = [
                 symptom
                 for symptom in candidate.disease_symptoms
-                if self._usable_symptom(symptom, known_positive, known_negative)
+                if self.planner.usable_symptom(symptom, known_positive, known_negative)
                 and counts.get(symptom, 0) < len(top)
             ]
             discriminative = sorted(
@@ -120,7 +122,7 @@ class FollowUpQuestionService:
             common_missing = [
                 symptom
                 for symptom in candidate.disease_symptoms
-                if self._usable_symptom(symptom, known_positive, known_negative)
+                if self.planner.usable_symptom(symptom, known_positive, known_negative)
             ][:8]
             profile_list.append(
                 {
@@ -167,26 +169,9 @@ class FollowUpQuestionService:
         }
 
     @staticmethod
-    def _usable_symptom(
-        symptom: str,
-        known_positive: set[str],
-        known_negative: set[str],
-    ) -> bool:
-        text = str(symptom or "").strip()
-        if not text or text in _GENERIC_SYMPTOMS:
-            return False
-        if text in known_positive or text in known_negative:
-            return False
-        if any(text in known or known in text for known in known_positive if known):
-            return False
-        if any(text in known or known in text for known in known_negative if known):
-            return False
-        return True
-
-    @staticmethod
     def _append_unique(items: list[str], value: str) -> None:
         text = str(value or "").strip()
-        if text and text not in items and text not in _GENERIC_SYMPTOMS:
+        if text and text not in items:
             items.append(text)
 
     @staticmethod

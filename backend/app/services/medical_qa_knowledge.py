@@ -58,6 +58,7 @@ class MedicalKnowledgeGatherer:
         max_follow_up_turns: int = 2,
         possible_confidence_threshold: float = 0.55,
         possible_candidate_limit: int = 3,
+        negated_symptoms: List[str] | None = None,
     ) -> KnowledgeResult:
         evidence: list[str] = []
         used_intents: list[str] = []
@@ -90,6 +91,7 @@ class MedicalKnowledgeGatherer:
                 query=effective_query,
                 disease=disease,
                 symptoms=symptoms,
+                negated_symptoms=negated_symptoms or [],
             )
             evidence.extend(disease_resolution.evidence)
             if (
@@ -101,6 +103,8 @@ class MedicalKnowledgeGatherer:
                     threshold=possible_confidence_threshold,
                     limit=possible_candidate_limit,
                 )
+                if not possible:
+                    possible = disease_resolution.candidates[:possible_candidate_limit]
                 if possible:
                     disease_resolution = self._mark_possible_answer(
                         disease_resolution,

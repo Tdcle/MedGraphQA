@@ -85,3 +85,49 @@ python backend\evals\run_core_eval.py --dataset-dir backend\evals\datasets --his
 - `negated_symptom_false_positive_rate`: 被否认的症状被错误当作正向症状的比例。
 - `disease_top5_recall`: 目标疾病是否进入 Top5 候选。
 - `follow_up_over_limit_count`: 多轮对话是否超过追问上限。
+
+## 安全护栏评测
+
+规则性护栏评测不调用 KG、NER 或 LLM，只验证 `RuleBasedSafetyGuard` 的输入拦截和输出重写逻辑。
+
+```powershell
+python backend\evals\run_safety_eval.py
+```
+
+默认读取：
+
+```text
+backend/evals/datasets/safety_guardrails.jsonl
+```
+
+输出报告位于：
+
+```text
+backend/evals/runs/safety_eval_*.json
+```
+
+每次成功评测后会追加历史记录：
+
+```text
+backend/evals/runs/safety_eval_history.jsonl
+```
+
+常用调试命令：
+
+```powershell
+python backend\evals\run_safety_eval.py --max-cases 10
+python backend\evals\run_safety_eval.py --no-progress
+python backend\evals\run_safety_eval.py --dataset backend\evals\datasets\safety_guardrails.jsonl
+```
+
+安全护栏核心指标：
+
+- `input_category_accuracy`: 输入安全分类准确率。
+- `action_accuracy`: `continue` / `direct_response` 动作准确率。
+- `expected_hit_code_recall`: 期望触发规则的召回率。
+- `forbidden_hit_violation_rate`: 不应触发规则的误触发比例。
+- `direct_response_recall`: 应直接安全回答的样例召回率。
+- `continue_pass_rate`: 应继续主流程的样例放行率。
+- `unsafe_output_recall`: 不安全输出被识别的比例。
+- `safe_output_pass_rate`: 安全输出被放行的比例。
+- `rewrite_success_rate`: 不安全输出重写后通过二次安全检查的比例。
