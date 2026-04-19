@@ -1,0 +1,67 @@
+groups:
+  - name: medgraphqa-first-version
+    rules:
+      - alert: MedGraphQABackendDown
+        expr: up{job="medgraphqa-backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: MedGraphQA backend is down
+          description: Prometheus has not scraped the backend /metrics endpoint for 1 minute.
+
+      - alert: MedGraphQAHighHttp5xxRate
+        expr: |
+          (
+            sum(rate(medgraphqa_http_requests_total{status=~"5.."}[5m]))
+            /
+            clamp_min(sum(rate(medgraphqa_http_requests_total[5m])), 0.001)
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: MedGraphQA HTTP 5xx rate is high
+          description: More than 5% of HTTP requests returned 5xx in the last 5 minutes.
+
+      - alert: MedGraphQAChatP95Slow
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(medgraphqa_chat_request_duration_seconds_bucket[10m])) by (le)
+          ) > 60
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: MedGraphQA chat p95 latency is slow
+          description: Chat p95 latency has been above 60 seconds for 10 minutes.
+
+      - alert: MedGraphQALLMTimeoutRateHigh
+        expr: |
+          (
+            sum(rate(medgraphqa_llm_timeouts_total[10m]))
+            /
+            clamp_min(sum(rate(medgraphqa_llm_requests_total[10m])), 0.001)
+          ) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: MedGraphQA LLM timeout rate is high
+          description: More than 10% of LLM requests timed out in the last 10 minutes.
+
+      - alert: MedGraphQANonMedicalGuardrailRateHigh
+        expr: |
+          (
+            sum(rate(medgraphqa_safety_input_decisions_total{category="non_medical",action="direct_response"}[30m]))
+            /
+            clamp_min(sum(rate(medgraphqa_chat_requests_total[30m])), 0.001)
+          ) > 0.2
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: MedGraphQA non-medical guardrail rate is high
+          description: More than 20% of chat requests were blocked as non-medical in the last 30 minutes.
+

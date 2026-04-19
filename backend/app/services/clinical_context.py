@@ -100,6 +100,23 @@ _SIMILAR_HISTORY_PATTERNS = (
     r"(近期|最近|之前|以前)?(没有|没|无).{0,4}(类似|相似)(症状|发作|情况)?",
     r"(近期|最近|之前|以前)?有.{0,4}(类似|相似)(症状|发作|情况)?",
 )
+_COMMON_DISEASE_MENTIONS = (
+    "急性上呼吸道感染",
+    "上呼吸道感染",
+    "流行性感冒",
+    "过敏性鼻炎",
+    "急性鼻炎",
+    "慢性鼻炎",
+    "感冒",
+    "流感",
+    "鼻炎",
+    "咽炎",
+    "胃炎",
+    "肠胃炎",
+    "胃肠炎",
+    "肺炎",
+    "支气管炎",
+)
 _NEGATION_BOUNDARY_CHARS = set("，,。；;、 \n\t我也并且但又还暂目前现在")
 _POSITIVE_SEGMENT_PREFIX = re.compile(
     r"^(我最近|我|最近|近期|早上起来|今天早上起来|今天|早上|还有|伴有|伴随|并且|同时|有点|主要是|出现)"
@@ -528,6 +545,7 @@ class ClinicalContextService:
         return ClinicalContext(
             symptoms=symptoms,
             negated_symptoms=negated,
+            known_diseases=self._extract_known_diseases_from_text(query),
             medication_status=self._first_regex_text(query, _MEDICATION_STATUS_PATTERNS),
             diet_status=self._first_regex_text(query, _DIET_STATUS_PATTERNS),
             similar_history=self._first_regex_text(query, _SIMILAR_HISTORY_PATTERNS),
@@ -543,6 +561,14 @@ class ClinicalContextService:
     ) -> ClinicalContext:
         service = cls(llm_service=None, enabled=False)
         return service._rule_context_from_text(query, entity_hints, entities)
+
+    @staticmethod
+    def _extract_known_diseases_from_text(query: str) -> list[str]:
+        result: list[str] = []
+        for disease in _COMMON_DISEASE_MENTIONS:
+            if disease in query and disease not in result:
+                result.append(disease)
+        return result
 
     def _should_skip_llm(
         self,
@@ -695,7 +721,19 @@ class ClinicalContextService:
             return False
         if value in _NON_ENTITY_TERMS or value in _GENERIC_SYMPTOM_NAMES:
             return False
-        if any(marker in value for marker in ("怎么办", "怎么治", "是否", "有没有")):
+        if any(
+            marker in value
+            for marker in (
+                "怎么办",
+                "怎么治",
+                "是否",
+                "有没有",
+                "是不是",
+                "可能是",
+                "怀疑",
+                "疑似",
+            )
+        ):
             return False
         return True
 

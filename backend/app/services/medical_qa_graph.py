@@ -19,6 +19,7 @@ from app.services.llm_service import DashScopeService, OllamaService
 from app.services.medical_qa_knowledge import MedicalKnowledgeGatherer
 from app.services.memory_repository import UserMemory
 from app.services.memory_service import MemoryService
+from app.services.metrics import record_safety_input, record_safety_output, track_chat_request
 from app.services.operation_log import log_operation
 from app.services.safety_guardrails import RuleBasedSafetyGuard
 
@@ -114,10 +115,12 @@ class MedicalQAGraph:
         user_id: str,
         conversation_id: str | None,
     ) -> ChatResponse:
-        state = self.app.invoke(
-            self._initial_state(query, user_id, conversation_id)
-        )
-        return state["response"]
+        with track_chat_request("normal") as metrics_result:
+            state = self.app.invoke(
+                self._initial_state(query, user_id, conversation_id)
+            )
+            metrics_result.update(self._chat_metrics_result(state))
+            return state["response"]
 
     def invoke_stream(
         self,
@@ -127,53 +130,55 @@ class MedicalQAGraph:
         on_status=None,
         on_token=None,
     ) -> ChatResponse:
-        state: MedicalQAState = self._initial_state(query, user_id, conversation_id)
-        for label, node in [
-            ("正在载入会话", self._load_session),
-            ("正在进行安全检查", self._evaluate_input_safety),
-        ]:
-            if on_status:
-                on_status(label)
-            state.update(self._run_node(label, node, state))
-
-        if self._route_after_input_safety(state) == "safety_response":
-            state.update(self._run_node("构建安全回答", self._build_safety_response, state))
-        else:
+        with track_chat_request("stream") as metrics_result:
+            state: MedicalQAState = self._initial_state(query, user_id, conversation_id)
             for label, node in [
-                ("正在识别意图", self._detect_intents),
-                ("正在用RoBERTa识别实体片段", self._extract_entity_mentions),
-                ("正在抽取临床上下文", self._extract_clinical_context),
-                ("正在识别实体", self._normalize_entities),
-                ("正在读取长期记忆", self._load_long_term_memory),
-                ("正在检索知识图谱", self._gather_knowledge),
+                ("正在载入会话", self._load_session),
+                ("正在进行安全检查", self._evaluate_input_safety),
             ]:
                 if on_status:
                     on_status(label)
                 state.update(self._run_node(label, node, state))
 
-            route = self._route_after_knowledge(state)
-            logger.info("operation=chat.route_after_knowledge status=ok route=%s", route)
-            if route == "follow_up":
-                state.update(self._run_node("构建追问", self._build_follow_up, state))
-            elif route == "no_evidence":
-                state.update(self._run_node("构建无证据回答", self._build_no_evidence, state))
+            if self._route_after_input_safety(state) == "safety_response":
+                state.update(self._run_node("构建安全回答", self._build_safety_response, state))
             else:
-                if on_status:
-                    on_status("正在生成回答")
-                state.update(
-                    self._run_node(
-                        "生成模型回答",
-                        lambda current: self._generate_answer_stream(current, on_token=on_token),
-                        state,
-                    )
-                )
+                for label, node in [
+                    ("正在识别意图", self._detect_intents),
+                    ("正在用RoBERTa识别实体片段", self._extract_entity_mentions),
+                    ("正在抽取临床上下文", self._extract_clinical_context),
+                    ("正在识别实体", self._normalize_entities),
+                    ("正在读取长期记忆", self._load_long_term_memory),
+                    ("正在检索知识图谱", self._gather_knowledge),
+                ]:
+                    if on_status:
+                        on_status(label)
+                    state.update(self._run_node(label, node, state))
 
-        state.update(self._run_node("应用安全护栏", self._apply_output_guardrails, state))
-        if on_token and state.get("answer"):
-            on_token(state["answer"])
-        state.update(self._run_node("抽取长期记忆", self._extract_memory, state))
-        state.update(self._run_node("持久化对话", self._persist, state))
-        return state["response"]
+                route = self._route_after_knowledge(state)
+                logger.info("operation=chat.route_after_knowledge status=ok route=%s", route)
+                if route == "follow_up":
+                    state.update(self._run_node("构建追问", self._build_follow_up, state))
+                elif route == "no_evidence":
+                    state.update(self._run_node("构建无证据回答", self._build_no_evidence, state))
+                else:
+                    if on_status:
+                        on_status("正在生成回答")
+                    state.update(
+                        self._run_node(
+                            "生成模型回答",
+                            lambda current: self._generate_answer_stream(current, on_token=on_token),
+                            state,
+                        )
+                    )
+
+            state.update(self._run_node("应用安全护栏", self._apply_output_guardrails, state))
+            if on_token and state.get("answer"):
+                on_token(state["answer"])
+            state.update(self._run_node("抽取长期记忆", self._extract_memory, state))
+            state.update(self._run_node("持久化对话", self._persist, state))
+            metrics_result.update(self._chat_metrics_result(state))
+            return state["response"]
 
     @staticmethod
     def _initial_state(
@@ -281,7 +286,14 @@ class MedicalQAGraph:
 
     def _evaluate_input_safety(self, state: MedicalQAState) -> dict:
         assessment = self.safety_guard.assess_input(state["query"])
-        hit_codes = ",".join(item.code for item in assessment.hits)
+        hit_codes_list = [item.code for item in assessment.hits]
+        hit_codes = ",".join(hit_codes_list)
+        record_safety_input(
+            assessment.category,
+            assessment.action,
+            assessment.severity,
+            hit_codes_list,
+        )
         logger.info(
             "operation=safety.input status=ok category=%s action=%s severity=%s hits=%s",
             assessment.category,
@@ -341,6 +353,9 @@ class MedicalQAGraph:
                 and term not in terms
                 and not self._is_negated_text(term, context.negated_symptoms)
             ):
+                terms.append(term)
+        for term in context.known_diseases:
+            if term and term not in terms:
                 terms.append(term)
         for item in state.get("preliminary_entities", []):
             for term in [item.mention, item.matched_alias, item.canonical_name]:
@@ -569,11 +584,13 @@ class MedicalQAGraph:
             evidence=state.get("evidence", []),
             input_assessment=state.get("input_safety", {}),
         )
+        hit_codes = [item.code for item in result.hits]
+        record_safety_output(result.safe, result.action, hit_codes)
         logger.info(
             "operation=safety.output status=ok action=%s safe=%s hits=%s",
             result.action,
             result.safe,
-            ",".join(item.code for item in result.hits) or "-",
+            ",".join(hit_codes) or "-",
         )
         output = {"output_safety": result.to_dict()}
         if not result.safe:
@@ -630,6 +647,14 @@ class MedicalQAGraph:
         )
         self._emit_trace(state)
         return {"response": build_chat_response(state, awaiting)}
+
+    @staticmethod
+    def _chat_metrics_result(state: MedicalQAState) -> dict:
+        return {
+            "answer_len": len(state.get("answer") or ""),
+            "entity_count": len(state.get("entities") or []),
+            "evidence_count": len(state.get("evidence") or []),
+        }
 
     def _message_metadata(self, state: MedicalQAState, awaiting: bool) -> dict:
         return {

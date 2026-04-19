@@ -55,6 +55,10 @@ _COMMON_DISEASE_KEYWORDS = {
 }
 _RARER_DISEASE_MARKERS = (
     "综合征",
+    "嗜酸",
+    "细胞增多",
+    "非变态反应",
+    "非变应性",
     "小儿",
     "老年",
     "妊娠",
@@ -71,6 +75,7 @@ _RARER_DISEASE_MARKERS = (
     "肉瘤",
     "白血病",
 )
+_MIN_PRIOR_FOR_SYMPTOM_INFERENCE = 0.5
 _SYMPTOM_LIKE_DISEASE_NAMES = {
     "水肿",
     "肿胀",
@@ -250,6 +255,7 @@ class DiseaseResolver:
             len(symptom_names) >= self.min_symptoms_for_inference
             and top.confidence >= self.confidence_threshold
             and top_gap >= self.top_gap_threshold
+            and top.disease_prior >= _MIN_PRIOR_FOR_SYMPTOM_INFERENCE
         ):
             result = DiseaseResolutionResult(
                 decision="answer_inferred",
@@ -277,6 +283,10 @@ class DiseaseResolver:
             if top_gap < self.top_gap_threshold:
                 reasons.append(
                     f"Top1与Top2差值{top_gap:.2f}低于阈值{self.top_gap_threshold:.2f}"
+                )
+            if top.disease_prior < _MIN_PRIOR_FOR_SYMPTOM_INFERENCE:
+                reasons.append(
+                    f"最高候选“{top.disease}”常见性先验{top.disease_prior:.2f}低于直接推断要求{_MIN_PRIOR_FOR_SYMPTOM_INFERENCE:.2f}"
                 )
 
             result = DiseaseResolutionResult(

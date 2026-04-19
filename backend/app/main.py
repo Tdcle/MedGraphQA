@@ -4,7 +4,7 @@ import sys
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import auth, chat, health, memory
+from app.api.routes import auth, chat, health, memory, metrics
 from app.core.config import settings
 from app.core.container import build_container
 from app.core.logging import configure_logging
@@ -40,6 +40,7 @@ app.include_router(health.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
 app.include_router(chat.router, prefix="/api")
 app.include_router(memory.router, prefix="/api")
+app.include_router(metrics.router)
 
 
 @app.on_event("shutdown")

@@ -63,12 +63,14 @@
                   </div>
                 </template>
                 <div v-else class="text">{{ item.text }}</div>
-                <template v-if="item.meta">
-                  <a-divider margin="8px" />
-                  <div class="meta">
-                    <div><b>识别实体：</b>{{ item.meta.entities }}</div>
-                    <div><b>识别意图：</b>{{ item.meta.intents }}</div>
-                  </div>
+                <template v-if="showDebugMeta && item.meta">
+                  <details class="debug-meta">
+                    <summary>调试信息</summary>
+                    <div class="meta">
+                      <div><b>识别实体：</b>{{ item.meta.entities }}</div>
+                      <div><b>识别意图：</b>{{ item.meta.intents }}</div>
+                    </div>
+                  </details>
                 </template>
               </div>
             </div>
@@ -161,6 +163,7 @@ const memoryDrawerVisible = ref(false)
 const pendingMemories = computed(() => memories.value.filter((item) => item.status === 'pending'))
 const activeMemories = computed(() => memories.value.filter((item) => item.status === 'active'))
 const pendingMemoryCount = computed(() => pendingMemories.value.length)
+const showDebugMeta = computed(() => Boolean(user.value?.is_admin))
 
 const welcomeMessage = {
   role: 'assistant',
@@ -705,6 +708,30 @@ onMounted(async () => {
 .meta {
   font-size: 12px;
   color: #4e5969;
+}
+
+.debug-meta {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #e5e6eb;
+  white-space: normal;
+}
+
+.debug-meta summary {
+  width: fit-content;
+  cursor: pointer;
+  color: #4e5969;
+  font-size: 12px;
+  line-height: 18px;
+  user-select: none;
+}
+
+.debug-meta .meta {
+  margin-top: 6px;
+  display: grid;
+  gap: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .loading-line {

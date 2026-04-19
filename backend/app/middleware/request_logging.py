@@ -6,6 +6,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
 from app.core.request_context import reset_request_id, set_request_id
+from app.services.metrics import record_http_request, track_http_in_progress
 
 
 access_logger = logging.getLogger("medgraphqa.access")
@@ -23,9 +24,11 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         start = time.perf_counter()
 
         try:
-            response = await call_next(request)
+            with track_http_in_progress(request.method, request.url.path):
+                response = await call_next(request)
         except Exception:
             duration_ms = (time.perf_counter() - start) * 1000
+            record_http_request(request.method, request.url.path, 500, duration_ms / 1000)
             error_logger.exception(
                 "request failed method=%s path=%s client=%s duration_ms=%.2f",
                 request.method,
@@ -37,6 +40,12 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             raise
 
         duration_ms = (time.perf_counter() - start) * 1000
+        record_http_request(
+            request.method,
+            request.url.path,
+            response.status_code,
+            duration_ms / 1000,
+        )
         response.headers["X-Request-ID"] = request_id
 
         if self.access_log_enabled:

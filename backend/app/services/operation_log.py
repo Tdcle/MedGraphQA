@@ -3,6 +3,8 @@ import time
 from contextlib import contextmanager
 from typing import Iterator
 
+from app.services.metrics import observe_operation
+
 
 def _format_fields(fields: dict) -> str:
     parts = []
@@ -26,6 +28,14 @@ def log_operation(
         yield result
     except Exception as exc:
         duration_ms = (time.perf_counter() - started) * 1000
+        observe_operation(
+            operation,
+            "error",
+            duration_ms / 1000,
+            fields=fields,
+            result=result,
+            error_type=type(exc).__name__,
+        )
         logger.exception(
             "operation=%s status=error duration_ms=%.2f error_type=%s %s",
             operation,
@@ -36,6 +46,13 @@ def log_operation(
         raise
     else:
         duration_ms = (time.perf_counter() - started) * 1000
+        observe_operation(
+            operation,
+            "ok",
+            duration_ms / 1000,
+            fields=fields,
+            result=result,
+        )
         logger.info(
             "operation=%s status=ok duration_ms=%.2f %s %s",
             operation,

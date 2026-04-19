@@ -1,11 +1,14 @@
 import logging
 import re
-from dataclasses import replace
-from datetime import datetime, timedelta, timezone
 from typing import Sequence
 
 from app.services.entity_search import EntityCandidate, normalize_entity_text
 from app.services.memory_repository import MemoryRepository, UserMemory
+from app.services.metrics import (
+    MEMORY_EXTRACT_CANDIDATES_TOTAL,
+    MEMORY_LOADED_TOTAL,
+    MEMORY_SAVED_TOTAL,
+)
 
 
 logger = logging.getLogger("medgraphqa.memory")
@@ -13,9 +16,14 @@ logger = logging.getLogger("medgraphqa.memory")
 _AGE_RE = re.compile(r"(?:我|本人)?\s*(\d{1,3})\s*岁")
 _ALLERGY_RE = re.compile(r"(?:我|本人)?(?:对)?([\u4e00-\u9fffA-Za-z0-9]{2,20})(?:过敏|会过敏)")
 _MEDICATION_RE = re.compile(
-    r"(?:正在|一直|长期|现在)?(?:吃|服用|用)([\u4e00-\u9fffA-Za-z0-9、，,]{2,40})(?:药)?"
+    r"(?:我|本人)?(?:正在|一直|长期|现在|目前|平时|每天|每日|规律|按医嘱)(?:在)?"
+    r"(?:吃|服用|使用|用)([\u4e00-\u9fffA-Za-z0-9、，,]{2,40})(?:药)?"
 )
-_NEGATION_RE = re.compile(r"(?:没有|无|未|否认).{0,8}(?:过敏|高血压|糖尿病|哮喘|冠心病|怀孕)")
+_NEGATION_MARKERS = ("没有", "没", "无", "未", "否认", "不是", "不")
+_PREGNANCY_NEGATION_RE = re.compile(r"(?:没有|没|无|未|否认|不是).{0,8}(?:怀孕|妊娠|孕)")
+_QUESTION_OR_GENERIC_RE = re.compile(
+    r"(什么|哪种|哪类|多少|几|怎么|如何|能不能|可不可以|需要|应该|合适|吗|么|是否)"
+)
 
 _CHRONIC_DISEASES = [
     "高血压",
@@ -46,14 +54,6 @@ _SHORT_PREFERENCE_PATTERNS = [
     "简单说",
 ]
 
-_SYMPTOM_CONTAINS = {
-    "上腹部疼痛": "腹痛",
-    "下腹部疼痛": "腹痛",
-    "腹部疼痛": "腹痛",
-    "腹痛": "腹痛",
-    "拉肚子": "腹泻",
-}
-
 
 class MemoryService:
     def __init__(self, repository: MemoryRepository) -> None:
@@ -66,7 +66,6 @@ class MemoryService:
             "chronic_disease",
             "medication",
             "profile",
-            "recent_symptom",
         ]
         if "drug_producer" in intents or any("drug" in intent for intent in intents):
             memory_types.extend(["contraindication"])
@@ -80,7 +79,10 @@ class MemoryService:
             memory_types=["preference"],
             limit=5,
         )
-        return memories + preferences
+        result = memories + preferences
+        for memory in result:
+            MEMORY_LOADED_TOTAL.labels(memory_type=memory.memory_type).inc()
+        return result
 
     def list_memories(self, user_id: str) -> list[UserMemory]:
         return self.repository.list_for_user(user_id=user_id)
@@ -119,14 +121,18 @@ class MemoryService:
         query: str,
         entities: Sequence[EntityCandidate],
     ) -> list[UserMemory]:
-        if _NEGATION_RE.search(query):
-            return []
-
         candidates = self._extract_candidates(user_id, query, entities)
+        for candidate in candidates:
+            MEMORY_EXTRACT_CANDIDATES_TOTAL.labels(memory_type=candidate.memory_type).inc()
         saved: list[UserMemory] = []
         for candidate in candidates:
             try:
-                saved.append(self.repository.upsert(candidate))
+                memory = self.repository.upsert(candidate)
+                MEMORY_SAVED_TOTAL.labels(
+                    memory_type=memory.memory_type,
+                    status=memory.status,
+                ).inc()
+                saved.append(memory)
             except Exception:
                 logger.exception(
                     "failed to save user memory type=%s key=%s",
@@ -148,7 +154,6 @@ class MemoryService:
         memories.extend(self._extract_medications(user_id, query))
         memories.extend(self._extract_pregnancy(user_id, query))
         memories.extend(self._extract_preferences(user_id, query))
-        memories.extend(self._extract_recent_symptoms(user_id, query, entities))
         return self._dedupe(memories)
 
     def _extract_profile(self, user_id: str, query: str) -> list[UserMemory]:
@@ -166,11 +171,11 @@ class MemoryService:
                         f"年龄：{age}岁。",
                     )
                 )
-        if re.search(r"(?:我是|本人是|性别[:：]?|，|,)?男(?:性)?", query):
+        if re.search(r"(?:我是|本人是|性别[:：]?|[，,]\s*)男(?:性)?(?:[，,。.!！?？\s]|$)", query):
             memories.append(
                 self._memory(user_id, "profile", "sex", {"sex": "男"}, "性别：男。")
             )
-        if re.search(r"(?:我是|本人是|性别[:：]?|，|,)?女(?:性)?", query):
+        if re.search(r"(?:我是|本人是|性别[:：]?|[，,]\s*)女(?:性)?(?:[，,。.!！?？\s]|$)", query):
             memories.append(
                 self._memory(user_id, "profile", "sex", {"sex": "女"}, "性别：女。")
             )
@@ -179,6 +184,8 @@ class MemoryService:
     def _extract_allergies(self, user_id: str, query: str) -> list[UserMemory]:
         memories: list[UserMemory] = []
         for match in _ALLERGY_RE.finditer(query):
+            if self._is_negated_context(query, match.start()):
+                continue
             name = self._clean_name(match.group(1))
             if not self._valid_memory_name(name):
                 continue
@@ -198,6 +205,8 @@ class MemoryService:
         memories: list[UserMemory] = []
         for disease in _CHRONIC_DISEASES:
             if disease not in query:
+                continue
+            if self._is_negated_context(query, query.find(disease)):
                 continue
             if not re.search(rf"(?:我|本人)?(?:有|患有|得了|确诊|病史).{{0,6}}{re.escape(disease)}|{re.escape(disease)}病史", query):
                 continue
@@ -236,6 +245,8 @@ class MemoryService:
         return memories
 
     def _extract_pregnancy(self, user_id: str, query: str) -> list[UserMemory]:
+        if _PREGNANCY_NEGATION_RE.search(query):
+            return []
         if not any(pattern in query for pattern in _PREGNANCY_PATTERNS):
             return []
         return [
@@ -260,77 +271,6 @@ class MemoryService:
                 "偏好简短直接的回答。",
             )
         ]
-
-    def _extract_recent_symptoms(
-        self,
-        user_id: str,
-        query: str,
-        entities: Sequence[EntityCandidate],
-    ) -> list[UserMemory]:
-        if not re.search(r"最近|这几天|近\d+天|今天|昨天|持续", query):
-            return []
-        symptoms = self._select_recent_symptoms(entities)
-        memories: list[UserMemory] = []
-        expires_at = datetime.now(timezone.utc) + timedelta(days=14)
-        for symptom in symptoms:
-            key = normalize_entity_text(symptom)
-            memories.append(
-                replace(
-                    self._memory(
-                        user_id,
-                        "recent_symptom",
-                        key,
-                        {"name": symptom},
-                        f"近期出现：{symptom}。",
-                        confidence=0.85,
-                    ),
-                    expires_at=expires_at,
-                )
-            )
-        return memories
-
-    def _select_recent_symptoms(
-        self,
-        entities: Sequence[EntityCandidate],
-    ) -> list[str]:
-        candidates = [
-            item
-            for item in entities
-            if item.entity_type == "疾病症状"
-            and (
-                "postgres_exact" in item.match_method
-                or item.match_method == "elasticsearch"
-                or item.match_method.startswith("rrf:")
-            )
-            and item.match_method != "elasticsearch_vector"
-            and item.confidence >= 0.8
-        ]
-        if not candidates:
-            return []
-
-        best_by_name: dict[str, EntityCandidate] = {}
-        for item in candidates:
-            normalized = self._normalize_symptom_name(item.canonical_name)
-            current = best_by_name.get(normalized)
-            if current is None or item.score > current.score:
-                best_by_name[normalized] = item
-
-        ranked = sorted(
-            best_by_name.items(),
-            key=lambda pair: (
-                0 if "postgres_exact" in pair[1].match_method else 1,
-                -pair[1].score,
-                len(pair[0]),
-            ),
-        )
-        return [name for name, _ in ranked[:1]]
-
-    @staticmethod
-    def _normalize_symptom_name(name: str) -> str:
-        for source, target in _SYMPTOM_CONTAINS.items():
-            if source == name or source in name:
-                return target
-        return name
 
     @staticmethod
     def _memory(
@@ -362,7 +302,31 @@ class MemoryService:
     def _valid_memory_name(value: str) -> bool:
         if len(value) < 2 or len(value) > 30:
             return False
-        return value not in {"这个", "那个", "药物", "药", "东西", "过敏"}
+        if any(marker in value for marker in _NEGATION_MARKERS):
+            return False
+        if _QUESTION_OR_GENERIC_RE.search(value):
+            return False
+        return value not in {
+            "这个",
+            "那个",
+            "药物",
+            "药",
+            "东西",
+            "过敏",
+            "什么药",
+            "什么",
+            "一些",
+            "一点",
+        }
+
+    @staticmethod
+    def _is_negated_context(query: str, start: int) -> bool:
+        if start < 0:
+            return False
+        prefix = query[:start]
+        last_boundary = max(prefix.rfind(item) for item in ("，", ",", "。", "；", ";", "！", "!", "？", "?"))
+        window = prefix[last_boundary + 1:start]
+        return any(marker in window for marker in _NEGATION_MARKERS)
 
     @staticmethod
     def _dedupe(memories: Sequence[UserMemory]) -> list[UserMemory]:

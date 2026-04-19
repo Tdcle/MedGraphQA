@@ -2,12 +2,14 @@ import json
 import logging
 import queue
 import time
+from contextvars import copy_context
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.api.deps import get_container, get_current_user
+from app.core.request_context import get_request_id, reset_request_id, set_request_id
 from app.core.container import ServiceContainer
 from app.schemas.chat import (
     ChatMessageItem,
@@ -48,71 +50,78 @@ def ask_stream(
     container: ServiceContainer = Depends(get_container),
     current_user: SessionUser = Depends(get_current_user),
 ):
+    request_id = get_request_id()
+
     def generate():
-        events: queue.Queue[tuple[str, object]] = queue.Queue()
+        request_token = set_request_id(request_id)
+        try:
+            events: queue.Queue[tuple[str, object]] = queue.Queue()
 
-        def on_status(message: str) -> None:
-            events.put(("status", {"message": message}))
+            def on_status(message: str) -> None:
+                events.put(("status", {"message": message}))
 
-        def on_token(token: str) -> None:
-            events.put(("token", {"text": token}))
+            def on_token(token: str) -> None:
+                events.put(("token", {"text": token}))
 
-        def run_worker() -> None:
-            try:
-                response = container.chat_service.ask_stream(
-                    payload.query,
-                    current_user.username,
-                    payload.conversation_id,
-                    on_status,
-                    on_token,
-                )
-                events.put(("_result", response))
-            except ValueError as exc:
-                events.put(("_value_error", str(exc)))
-            except Exception:
-                logger.exception("operation=chat.ask_stream_worker status=error")
-                events.put(("_worker_error", "请求失败，请稍后重试"))
+            def run_worker() -> None:
+                try:
+                    response = container.chat_service.ask_stream(
+                        payload.query,
+                        current_user.username,
+                        payload.conversation_id,
+                        on_status,
+                        on_token,
+                    )
+                    events.put(("_result", response))
+                except ValueError as exc:
+                    events.put(("_value_error", str(exc)))
+                except Exception:
+                    logger.exception("operation=chat.ask_stream_worker status=error")
+                    events.put(("_worker_error", "请求失败，请稍后重试"))
 
-        with log_operation(
-            logger,
-            "chat.ask_stream",
-            query_len=len(payload.query),
-            conversation_id=payload.conversation_id,
-        ) as result:
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                executor.submit(run_worker)
-                response = None
-                while True:
-                    try:
-                        event, data = events.get(timeout=15)
-                    except queue.Empty:
-                        yield _sse_event("ping", {"ts": time.time()})
-                        continue
+            with log_operation(
+                logger,
+                "chat.ask_stream",
+                query_len=len(payload.query),
+                conversation_id=payload.conversation_id,
+            ) as result:
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    worker_context = copy_context()
+                    executor.submit(worker_context.run, run_worker)
+                    response = None
+                    while True:
+                        try:
+                            event, data = events.get(timeout=15)
+                        except queue.Empty:
+                            yield _sse_event("ping", {"ts": time.time()})
+                            continue
 
-                    if event == "_result":
-                        response = data
-                        break
-                    if event == "_value_error":
-                        result["error"] = str(data)
-                        yield _sse_event("error", {"message": str(data)})
-                        return
-                    if event == "_worker_error":
-                        result["error"] = "worker_exception"
-                        yield _sse_event("error", {"message": str(data)})
-                        return
+                        if event == "_result":
+                            response = data
+                            break
+                        if event == "_value_error":
+                            result["error"] = str(data)
+                            yield _sse_event("error", {"message": str(data)})
+                            return
+                        if event == "_worker_error":
+                            result["error"] = "worker_exception"
+                            yield _sse_event("error", {"message": str(data)})
+                            return
 
-                    yield _sse_event(event, data)
+                        yield _sse_event(event, data)
 
-                while not events.empty():
-                    event, data = events.get_nowait()
-                    if event.startswith("_"):
-                        continue
-                    yield _sse_event(event, data)
+                    while not events.empty():
+                        event, data = events.get_nowait()
+                        if event.startswith("_"):
+                            continue
+                        yield _sse_event(event, data)
 
-            result["answer_len"] = len(response.answer)
-            result["entity_count"] = len(response.entities)
-            yield _sse_event("final", response.model_dump(mode="json"))
-            yield _sse_event("done", {"message": "done"})
+                result["answer_len"] = len(response.answer)
+                result["entity_count"] = len(response.entities)
+                yield _sse_event("final", response.model_dump(mode="json"))
+                yield _sse_event("done", {"message": "done"})
+        finally:
+            reset_request_id(request_token)
 
     return StreamingResponse(
         generate(),
